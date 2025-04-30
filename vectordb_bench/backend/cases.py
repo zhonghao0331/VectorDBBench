@@ -47,6 +47,8 @@ class CaseType(Enum):
     Custom = 100
     PerformanceCustomDataset = 101
 
+    ConcurrentReadWrite = 200
+
     def case_cls(self, custom_configs: dict | None = None) -> type["Case"]:
         if custom_configs is None:
             return type2case.get(self)()
@@ -321,13 +323,13 @@ class PerformanceCustomDataset(PerformanceCase):
     dataset: DatasetManager
 
     def __init__(
-        self,
-        name: str,
-        description: str,
-        load_timeout: float,
-        optimize_timeout: float,
-        dataset_config: dict,
-        **kwargs,
+            self,
+            name: str,
+            description: str,
+            load_timeout: float,
+            optimize_timeout: float,
+            dataset_config: dict,
+            **kwargs,
     ):
         dataset_config = CustomDatasetConfig(**dataset_config)
         dataset = CustomDataset(
@@ -349,6 +351,36 @@ class PerformanceCustomDataset(PerformanceCase):
         )
 
 
+class ConcurrentReadWriteConfig(BaseModel):
+    """Configuration for concurrent read-write operations"""
+    insert_rate: int = 1000  # Target vectors per second for insertion
+    search_rate: int = 100  # Target queries per second for search
+    window_size: int = 1000  # Number of operations per metrics window
+    total_duration: int = 3600  # Total test duration in seconds
+    batch_size: int = 100  # Batch size for insertions
+    search_k: int = 100  # K nearest neighbors for search
+    num_insert_workers: int = 4  # Number of insertion worker threads
+    num_search_workers: int = 4  # Number of search worker threads
+
+
+class ConcurrentReadWriteCase(PerformanceCase):
+    """Case definition for concurrent read-write testing"""
+    case_id: CaseType = CaseType.ConcurrentReadWrite
+    label: CaseLabel = CaseLabel.Performance
+    name: str = "Concurrent Insert and Search Performance Test"
+    description: str = """
+    Tests concurrent insert and search operations with real-time metrics collection.
+    Measures throughput, latency, and recall in configurable time windows.
+    """
+
+    # Inherit standard timeouts
+    load_timeout: float | int = config.LOAD_TIMEOUT_DEFAULT
+    optimize_timeout: float | int | None = config.OPTIMIZE_TIMEOUT_DEFAULT
+
+    # Add concurrent specific configuration
+    concurrent_config: ConcurrentReadWriteConfig
+
+
 type2case = {
     CaseType.CapacityDim960: CapacityDim960,
     CaseType.CapacityDim128: CapacityDim128,
@@ -367,4 +399,5 @@ type2case = {
     CaseType.Performance1536D5M99P: Performance1536D5M99P,
     CaseType.Performance1536D50K: Performance1536D50K,
     CaseType.PerformanceCustomDataset: PerformanceCustomDataset,
+    CaseType.ConcurrentReadWrite: ConcurrentReadWriteCase,
 }

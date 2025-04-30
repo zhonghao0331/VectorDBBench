@@ -15,6 +15,7 @@ from .cases import Case, CaseLabel
 from .clients import MetricType, api
 from .data_source import DatasetSource
 from .runner import MultiProcessingSearchRunner, SerialInsertRunner, SerialSearchRunner
+from .runner.concurrent_runner import ConcurrentReadWriteRunner
 
 log = logging.getLogger(__name__)
 
@@ -52,10 +53,10 @@ class CaseRunner(BaseModel):
     def __eq__(self, obj: any):
         if isinstance(obj, CaseRunner):
             return (
-                self.ca.label == CaseLabel.Performance
-                and self.config.db == obj.config.db
-                and self.config.db_case_config == obj.config.db_case_config
-                and self.ca.dataset == obj.ca.dataset
+                    self.ca.label == CaseLabel.Performance
+                    and self.config.db == obj.config.db
+                    and self.config.db_case_config == obj.config.db_case_config
+                    and self.ca.dataset == obj.ca.dataset
             )
         return False
 
@@ -110,6 +111,8 @@ class CaseRunner(BaseModel):
             return self._run_capacity_case()
         if self.ca.label == CaseLabel.Performance:
             return self._run_perf_case(drop_old)
+        if self.ca.label == CaseLabel.ConcurrentReadWrite:
+            return self._run_concurrent_case()
         msg = f"unknown case type: {self.ca.label}"
         log.warning(msg)
         raise ValueError(msg)
@@ -185,6 +188,63 @@ class CaseRunner(BaseModel):
         else:
             log.info(f"Performance case got result: {m}")
             return m
+
+    def _run_concurrent_case(self) -> Metric:
+        """Run concurrent insert and search case with enhanced metrics"""
+        metrics_collector = WindowedMetricsCollector(
+            self.config.case_config.concurrent_config.window_size
+        )
+
+        runner = ConcurrentReadWriteRunner(
+            db=self.db,
+            dataset=self.ca.dataset,
+            config=self.config.case_config.concurrent_config,
+            metrics_collector=metrics_collector,
+            ground_truth=self.ca.dataset.gt_data
+        )
+
+        window_metrics = []
+        try:
+            for metrics in runner.run():
+                window_metrics.append(metrics)
+                log.info(
+                    f"Window {metrics.window_id}:\n"
+                    f"  Insert metrics:\n"
+                    f"    Throughput: {metrics.insert_throughput:.2f} vec/s\n"
+                    f"    Avg latency: {metrics.avg_insert_latency:.2f} ms\n"
+                    f"    P99 latency: {metrics.p99_insert_latency:.2f} ms\n"
+                    f"  Search metrics:\n"
+                    f"    QPS: {metrics.search_qps:.2f}\n"
+                    f"    Avg latency: {metrics.avg_search_latency:.2f} ms\n"
+                    f"    P99 latency: {metrics.p99_search_latency:.2f} ms\n"
+                    f"    Avg recall: {metrics.avg_recall:.4f}\n"
+                    f"  Hardware metrics:\n"
+                    f"    Memory: {metrics.hardware_metrics.peak_memory_kb / 1024:.2f} MB\n"
+                    f"    CPU: {metrics.hardware_metrics.cpu_usage_percent:.1f}%"
+                )
+
+        except Exception as e:
+            log.error(f"Concurrent case error: {e}")
+            raise
+
+        return Metric(
+            # Standard metrics
+            max_qps=max(m.search_qps for m in window_metrics),
+            avg_recall=np.mean([m.avg_recall for m in window_metrics]),
+            serial_latency_p99=np.mean([m.p99_search_latency for m in window_metrics]),
+
+            # Enhanced metrics
+            window_metrics=window_metrics,
+            insert_throughput=np.mean([m.insert_throughput for m in window_metrics]),
+            avg_insert_latency=np.mean([m.avg_insert_latency for m in window_metrics]),
+            p99_insert_latency=np.mean([m.p99_insert_latency for m in window_metrics]),
+            avg_search_latency=np.mean([m.avg_search_latency for m in window_metrics]),
+            p99_search_latency=np.mean([m.p99_search_latency for m in window_metrics]),
+
+            # Hardware metrics
+            peak_memory_mb=max(m.hardware_metrics.peak_memory_kb / 1024 for m in window_metrics),
+            avg_cpu_percent=np.mean([m.hardware_metrics.cpu_usage_percent for m in window_metrics])
+        )
 
     @utils.time_it
     def _load_train_data(self):
