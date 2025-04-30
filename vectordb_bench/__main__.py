@@ -8,6 +8,7 @@ from . import config
 log = logging.getLogger("vectordb_bench")
 
 
+
 def main():
     log.info(f"all configs: {config().display()}")
     run_streamlit()
